@@ -1,0 +1,15 @@
+{
+  "default_account": "default",
+  "accounts": {
+    "default": {
+      "alias": "默认账号",
+      "profile_dir": "C:/Users/YourUsername/AppData/Local/Google/Chrome/XiaohongshuProfiles/default",
+      "created_at": null
+    },
+    "work": {
+      "alias": "工作账号",
+      "profile_dir": "C:/Users/YourUsername/AppData/Local/Google/Chrome/XiaohongshuProfiles/work",
+      "created_at": "2026-01-01T00:00:00"
+    }
+  }
+}
