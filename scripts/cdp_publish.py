@@ -69,6 +69,9 @@ SELECTORS = {
     # "上传图文" tab - must click before uploading images
     "image_text_tab": "div.creator-tab",
     "image_text_tab_text": "上传图文",
+    # "上传视频" tab - must click before uploading video
+    "video_tab": "div.creator-tab",
+    "video_tab_text": "上传视频",
     # Upload area - the file input element for images (visible after clicking tab)
     "upload_input": "input.upload-input",
     "upload_input_alt": 'input[type="file"]',
@@ -88,6 +91,8 @@ SELECTORS = {
 PAGE_LOAD_WAIT = 3  # seconds to wait after navigation
 TAB_CLICK_WAIT = 2  # seconds to wait after clicking tab
 UPLOAD_WAIT = 6  # seconds to wait after image upload for editor to appear
+VIDEO_PROCESS_TIMEOUT = 120  # seconds to wait for video processing
+VIDEO_PROCESS_POLL = 3  # seconds between video processing status checks
 ACTION_INTERVAL = 1  # seconds between actions
 
 
@@ -281,15 +286,13 @@ class XiaohongshuPublisher:
     # Publishing actions
     # ------------------------------------------------------------------
 
-    def _click_image_text_tab(self):
-        """Click the '上传图文' tab to switch to image+text publish mode."""
-        print("[cdp_publish] Clicking '上传图文' tab...")
-        tab_text = SELECTORS["image_text_tab_text"]
-        selector = SELECTORS["image_text_tab"]
+    def _click_tab(self, tab_selector: str, tab_text: str):
+        """Click a tab by selector and text content."""
+        print(f"[cdp_publish] Clicking '{tab_text}' tab...")
 
         clicked = self._evaluate(f"""
             (function() {{
-                var tabs = document.querySelectorAll('{selector}');
+                var tabs = document.querySelectorAll('{tab_selector}');
                 for (var i = 0; i < tabs.length; i++) {{
                     if (tabs[i].textContent.trim() === '{tab_text}') {{
                         tabs[i].click();
@@ -306,8 +309,16 @@ class XiaohongshuPublisher:
                 "The page structure may have changed."
             )
 
-        print("[cdp_publish] Tab clicked, waiting for upload area...")
+        print(f"[cdp_publish] Tab '{tab_text}' clicked, waiting for upload area...")
         time.sleep(TAB_CLICK_WAIT)
+
+    def _click_image_text_tab(self):
+        """Click the '上传图文' tab to switch to image+text publish mode."""
+        self._click_tab(SELECTORS["image_text_tab"], SELECTORS["image_text_tab_text"])
+
+    def _click_video_tab(self):
+        """Click the '上传视频' tab to switch to video publish mode."""
+        self._click_tab(SELECTORS["video_tab"], SELECTORS["video_tab_text"])
 
     def _upload_images(self, image_paths: list[str]):
         """Upload images via the file input element."""
@@ -352,6 +363,89 @@ class XiaohongshuPublisher:
 
         print("[cdp_publish] Images uploaded. Waiting for editor to appear...")
         time.sleep(UPLOAD_WAIT)
+
+    def _upload_video(self, video_path: str):
+        """Upload a video file via the file input element."""
+        normalized = video_path.replace("\\", "/")
+        print(f"[cdp_publish] Uploading video: {normalized}")
+
+        # Enable DOM domain
+        self._send("DOM.enable")
+
+        # Get the document root
+        doc = self._send("DOM.getDocument")
+        root_id = doc["root"]["nodeId"]
+
+        # Find the file input for video upload
+        node_id = 0
+        for selector in (SELECTORS["upload_input"], SELECTORS["upload_input_alt"]):
+            result = self._send("DOM.querySelector", {
+                "nodeId": root_id,
+                "selector": selector,
+            })
+            node_id = result.get("nodeId", 0)
+            if node_id:
+                break
+
+        if not node_id:
+            raise CDPError(
+                "Could not find file input element for video upload.\n"
+                "The page structure may have changed."
+            )
+
+        # Set the video file
+        self._send("DOM.setFileInputFiles", {
+            "nodeId": node_id,
+            "files": [normalized],
+        })
+
+        print("[cdp_publish] Video file submitted. Waiting for processing...")
+
+    def _wait_video_processing(self):
+        """Wait for the video to finish processing after upload.
+
+        The Xiaohongshu creator page shows a progress/processing indicator
+        while the video is being uploaded and transcoded. We wait until the
+        title input or content editor becomes available, which signals
+        that the video has been processed.
+        """
+        print("[cdp_publish] Waiting for video processing to complete...")
+        deadline = time.time() + VIDEO_PROCESS_TIMEOUT
+        last_pct = ""
+
+        while time.time() < deadline:
+            # Check if the title input has appeared (signals processing done)
+            for selector in (SELECTORS["title_input"], SELECTORS["title_input_alt"]):
+                found = self._evaluate(f"!!document.querySelector('{selector}')")
+                if found:
+                    print("[cdp_publish] Video processing complete - editor is ready.")
+                    time.sleep(1)  # small extra buffer
+                    return
+
+            # Try to read progress text for user feedback
+            pct = self._evaluate("""
+                (function() {
+                    // Look for progress percentage text
+                    var els = document.querySelectorAll(
+                        '[class*="progress"], [class*="percent"], [class*="upload"]'
+                    );
+                    for (var i = 0; i < els.length; i++) {
+                        var t = els[i].textContent.trim();
+                        if (t && /\\d+%/.test(t)) return t;
+                    }
+                    return '';
+                })()
+            """) or ""
+            if pct and pct != last_pct:
+                print(f"[cdp_publish] Video processing: {pct}")
+                last_pct = pct
+
+            time.sleep(VIDEO_PROCESS_POLL)
+
+        raise CDPError(
+            f"Video processing did not complete within {VIDEO_PROCESS_TIMEOUT}s. "
+            "The video may be too large or processing is slow."
+        )
 
     def _fill_title(self, title: str):
         """Fill in the article title."""
@@ -482,64 +576,98 @@ class XiaohongshuPublisher:
         
         return collected
     
+    def _click_element_by_cdp(self, description: str, js_get_rect: str):
+        """Click an element using CDP Input.dispatchMouseEvent for reliable clicks.
+
+        Modern web frameworks (Vue/React) often ignore JS .click() calls.
+        Dispatching real mouse events via CDP always works.
+
+        Args:
+            description: Human-readable description for logging.
+            js_get_rect: JavaScript expression that returns {x, y, width, height}
+                         of the element to click, or null if not found.
+        """
+        rect = self._evaluate(js_get_rect)
+        if not rect:
+            raise CDPError(
+                f"Could not find {description}. "
+                "Please click it manually in the browser."
+            )
+
+        # Compute center of the element
+        cx = rect["x"] + rect["width"] / 2
+        cy = rect["y"] + rect["height"] / 2
+        print(f"[cdp_publish] Clicking {description} at ({cx:.0f}, {cy:.0f})...")
+
+        # Dispatch a full mouse click sequence via CDP
+        for event_type in ("mousePressed", "mouseReleased"):
+            self._send("Input.dispatchMouseEvent", {
+                "type": event_type,
+                "x": cx,
+                "y": cy,
+                "button": "left",
+                "clickCount": 1,
+            })
+            time.sleep(0.05)
+
     def _click_publish(self):
-        """Click the publish button (found by text content)."""
+        """Click the publish button using CDP mouse events."""
         print("[cdp_publish] Clicking publish button...")
         time.sleep(ACTION_INTERVAL)
 
         btn_text = SELECTORS["publish_button_text"]
-        clicked = self._evaluate(f"""
+
+        # JavaScript to locate the publish button and return its bounding rect
+        js_get_rect = f"""
             (function() {{
-                // Strategy 1: search <button> elements by text
+                // Strategy 1: search <button> elements by exact text
                 var buttons = document.querySelectorAll('button');
                 for (var i = 0; i < buttons.length; i++) {{
                     var t = buttons[i].textContent.trim();
                     if (t === '{btn_text}') {{
-                        buttons[i].click();
-                        return true;
+                        var r = buttons[i].getBoundingClientRect();
+                        return {{ x: r.x, y: r.y, width: r.width, height: r.height }};
                     }}
                 }}
                 // Strategy 2: search d-button-content / d-text spans
-                var spans = document.querySelectorAll('.d-button-content .d-text, .d-button-content span');
+                var spans = document.querySelectorAll(
+                    '.d-button-content .d-text, .d-button-content span'
+                );
                 for (var i = 0; i < spans.length; i++) {{
                     if (spans[i].textContent.trim() === '{btn_text}') {{
-                        var el = spans[i].closest('button, [role="button"], .d-button, [class*="btn"], [class*="button"]');
-                        if (!el) el = spans[i].closest('.d-button-content');
+                        var el = spans[i].closest(
+                            'button, [role="button"], .d-button, [class*="btn"], [class*="button"]'
+                        );
                         if (!el) el = spans[i];
-                        el.click();
-                        return true;
+                        var r = el.getBoundingClientRect();
+                        return {{ x: r.x, y: r.y, width: r.width, height: r.height }};
                     }}
-                }}
-                return false;
-            }})();
-        """)
-
-        if clicked:
-            print("[cdp_publish] Publish button clicked.")
-        else:
-            raise CDPError(
-                "Could not find publish button. "
-                "Please click it manually in the browser."
-            )
-        
-        # Wait for publish success and get note link
-        time.sleep(5)  # Wait for publish success page
-        note_link = self._evaluate("""
-            (function() {{
-                // Try to find note link in success message
-                var links = document.querySelectorAll('a[href*="xiaohongshu.com/explore"]');
-                if (links.length > 0) {{
-                    return links[0].href;
-                }}
-                // Try to find note ID in page
-                var noteId = document.body.textContent.match(/\b[0-9a-fA-F]{{24}}\b/);
-                if (noteId) {{
-                    return 'https://www.xiaohongshu.com/explore/' + noteId[0];
                 }}
                 return null;
             }})();
+        """
+
+        self._click_element_by_cdp("publish button", js_get_rect)
+        print("[cdp_publish] Publish button clicked.")
+
+        # Wait for publish success and get note link
+        time.sleep(5)  # Wait for publish success page
+        note_link = self._evaluate("""
+            (function() {
+                // Try to find note link in success message
+                var links = document.querySelectorAll('a[href*="xiaohongshu.com/explore"]');
+                if (links.length > 0) {
+                    return links[0].href;
+                }
+                // Try to find note ID in page
+                var noteId = document.body.textContent.match(/\\b[0-9a-fA-F]{24}\\b/);
+                if (noteId) {
+                    return 'https://www.xiaohongshu.com/explore/' + noteId[0];
+                }
+                return null;
+            })();
         """)
-        
+
         return note_link
 
     # ------------------------------------------------------------------
@@ -592,6 +720,52 @@ class XiaohongshuPublisher:
             "  Please review in the browser before publishing.\n"
         )
 
+    def publish_video(
+        self,
+        title: str,
+        content: str,
+        video_path: str,
+    ):
+        """
+        Execute the full video publish workflow:
+        1. Navigate to creator publish page
+        2. Click '上传视频' tab
+        3. Upload video file and wait for processing
+        4. Fill title
+        5. Fill content
+
+        Args:
+            title: Article title
+            content: Article body text (paragraphs separated by newlines)
+            video_path: Local file path to the video to upload
+        """
+        if not self.ws:
+            raise CDPError("Not connected. Call connect() first.")
+
+        if not video_path:
+            raise CDPError("A video file is required to publish video on Xiaohongshu.")
+
+        # Step 1: Navigate to publish page
+        self._navigate(XHS_CREATOR_URL)
+        time.sleep(2)
+
+        # Step 2: Click '上传视频' tab
+        self._click_video_tab()
+
+        # Step 3: Upload video and wait for processing
+        self._upload_video(video_path)
+        self._wait_video_processing()
+
+        # Step 4: Fill title
+        self._fill_title(title)
+
+        # Step 5: Fill content
+        self._fill_content(content)
+
+        print(
+            "\n[cdp_publish] Video content has been filled in.\n"
+            "  Please review in the browser before publishing.\n"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -614,18 +788,22 @@ def main():
     sub.add_parser("check-login", help="Check login status (exit 0=logged in, 1=not)")
 
     # fill - fill form without clicking publish
-    p_fill = sub.add_parser("fill", help="Fill title/content/images without publishing")
+    p_fill = sub.add_parser("fill", help="Fill title/content/images or video without publishing")
     p_fill.add_argument("--title", required=True)
     p_fill.add_argument("--content", default=None)
     p_fill.add_argument("--content-file", default=None, help="Read content from file")
-    p_fill.add_argument("--images", nargs="+", required=True)
+    p_fill_media = p_fill.add_mutually_exclusive_group(required=True)
+    p_fill_media.add_argument("--images", nargs="+", help="Local image file paths")
+    p_fill_media.add_argument("--video", help="Local video file path")
 
     # publish - fill form and click publish
     p_pub = sub.add_parser("publish", help="Fill form and click publish")
     p_pub.add_argument("--title", required=True)
     p_pub.add_argument("--content", default=None)
     p_pub.add_argument("--content-file", default=None, help="Read content from file")
-    p_pub.add_argument("--images", nargs="+", required=True)
+    p_pub_media = p_pub.add_mutually_exclusive_group(required=True)
+    p_pub_media.add_argument("--images", nargs="+", help="Local image file paths")
+    p_pub_media.add_argument("--video", help="Local video file path")
 
     # click-publish - just click the publish button on current page
     sub.add_parser("click-publish", help="Click publish button on already-filled page")
@@ -737,7 +915,14 @@ def main():
                 sys.exit(1)
 
             publisher.connect()
-            publisher.publish(title=args.title, content=content, image_paths=args.images)
+            if getattr(args, "video", None):
+                publisher.publish_video(
+                    title=args.title, content=content, video_path=args.video
+                )
+            else:
+                publisher.publish(
+                    title=args.title, content=content, image_paths=args.images
+                )
             print("FILL_STATUS: READY_TO_PUBLISH")
 
             if args.command == "publish":

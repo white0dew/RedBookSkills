@@ -1,8 +1,8 @@
 ---
 name: RedBookSkills
 description: |
-  将图文内容自动发布到小红书（XHS）。
-  支持两类任务：发布图文、仅启动测试浏览器（不发布）。
+  将图文/视频内容自动发布到小红书（XHS）。
+  支持三类任务：发布图文、发布视频、仅启动测试浏览器（不发布）。
 metadata:
   trigger: 发布内容到小红书
   source: Angiin/Post-to-xhs
@@ -15,18 +15,20 @@ metadata:
 ## 输入判断
 
 优先按以下顺序判断：
-1. 用户明确要求“测试浏览器 / 启动浏览器 / 检查登录 / 只打开不发布”：进入测试浏览器流程。
-2. 用户已提供 `标题 + 正文 + 图片(本地路径或URL)`：直接进入发布流程。
-3. 用户只提供网页 URL：先提取网页内容与图片，再给出可发布草稿，等待用户确认。
-4. 信息不全：先补齐缺失信息，不要直接发布。
+1. 用户明确要求"测试浏览器 / 启动浏览器 / 检查登录 / 只打开不发布"：进入测试浏览器流程。
+2. 用户已提供 `标题 + 正文 + 视频(本地路径或URL)`：直接进入视频发布流程。
+3. 用户已提供 `标题 + 正文 + 图片(本地路径或URL)`：直接进入图文发布流程。
+4. 用户只提供网页 URL：先提取网页内容与图片/视频，再给出可发布草稿，等待用户确认。
+5. 信息不全：先补齐缺失信息，不要直接发布。
 
 ## 必做约束
 
-- 发布前必须让用户确认最终标题、正文和图片。
-- 没有图片时不得发布（小红书发图文必须有图片）。
+- 发布前必须让用户确认最终标题、正文和图片/视频。
+- 图文发布时，没有图片不得发布（小红书发图文必须有图片）。
+- 视频发布时，没有视频不得发布。图片和视频不可混合使用（二选一）。
 - 默认使用无头模式；若检测到未登录，切换有窗口模式登录。
 - 标题长度不超过 38（中文/中文标点按 2，英文数字按 1）。
-- 用户要求“仅测试浏览器”时，不得触发发布命令。
+- 用户要求"仅测试浏览器"时，不得触发发布命令。
 - 如果使用文件路径，必定使用绝对路径，禁止使用相对路径
 
 ## 测试浏览器流程（不发布）
@@ -36,11 +38,18 @@ metadata:
 3. 可选：执行登录状态检查并回传结果。
 4. 结束后如用户要求，关闭测试浏览器实例。
 
-## 发布流程
+## 图文发布流程
 
 1. 准备输入（标题、正文、图片 URL 或本地图片）。
 2. 如需文件输入，先写入 `title.txt`、`content.txt`。
 3. 执行发布命令（默认无头）。
+4. 回传执行结果（成功/失败 + 关键信息）。
+
+## 视频发布流程
+
+1. 准备输入（标题、正文、视频文件路径或 URL）。
+2. 如需文件输入，先写入 `title.txt`、`content.txt`。
+3. 执行视频发布命令（默认无头）。视频上传后需等待处理完成。
 4. 回传执行结果（成功/失败 + 关键信息）。
 
 ## 常用命令
@@ -121,6 +130,38 @@ python scripts/publish_pipeline.py --headless \
 python scripts/publish_pipeline.py --port 9223 --title-file title.txt \
   --content-file content.txt \
   --images "./images/pic1.jpg" "./images/pic2.jpg"
+```
+
+### 3.5) 视频发布（本地视频文件）
+
+```bash
+python scripts/publish_pipeline.py --headless \
+  --port 9223 \
+  --title-file title.txt \
+  --content-file content.txt \
+  --video "C:/videos/my_video.mp4"
+```
+
+```bash
+python scripts/publish_pipeline.py --port 9223 --title-file title.txt \
+  --content-file content.txt \
+  --video "C:/videos/my_video.mp4"
+```
+
+### 3.6) 视频发布（视频 URL）
+
+```bash
+python scripts/publish_pipeline.py --headless \
+  --port 9223 \
+  --title-file title.txt \
+  --content-file content.txt \
+  --video-url "https://example.com/video.mp4"
+```
+
+```bash
+python scripts/publish_pipeline.py --port 9223 --title-file title.txt \
+  --content-file content.txt \
+  --video-url "https://example.com/video.mp4"
 ```
 
 ### 4) 多账号发布 /切换

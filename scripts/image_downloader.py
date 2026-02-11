@@ -1,7 +1,7 @@
 """
-Image downloader for Xiaohongshu publishing.
+Media downloader for Xiaohongshu publishing.
 
-Downloads images from URLs to a local temp directory for upload,
+Downloads images and videos from URLs to a local temp directory for upload,
 and cleans up after publishing is complete.
 """
 
@@ -54,6 +54,29 @@ class ImageDownloader:
 
         return ".jpg"  # safe default
 
+    def _guess_video_extension(self, url: str, content_type: str | None) -> str:
+        """Guess video file extension from URL path or Content-Type header."""
+        path = urlparse(url).path
+        _, ext = os.path.splitext(unquote(path))
+        if ext and ext.lower() in (".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm"):
+            return ext.lower()
+
+        ct_map = {
+            "video/mp4": ".mp4",
+            "video/quicktime": ".mov",
+            "video/x-msvideo": ".avi",
+            "video/x-matroska": ".mkv",
+            "video/x-flv": ".flv",
+            "video/x-ms-wmv": ".wmv",
+            "video/webm": ".webm",
+        }
+        if content_type:
+            for mime, ext in ct_map.items():
+                if mime in content_type:
+                    return ext
+
+        return ".mp4"  # safe default for video
+
     def download(self, url: str, referer: str | None = None) -> str:
         """
         Download a single image and return the local file path.
@@ -88,6 +111,42 @@ class ImageDownloader:
         self.downloaded_files.append(filepath)
         print(f"[image_downloader] Downloaded: {url}")
         print(f"  -> {filepath} ({os.path.getsize(filepath)} bytes)")
+        return filepath
+
+    def download_video(self, url: str, referer: str | None = None) -> str:
+        """
+        Download a single video and return the local file path.
+
+        Args:
+            url: Video URL to download
+            referer: Optional Referer header. If None, auto-generates from URL domain.
+
+        Raises requests.RequestException on network errors.
+        """
+        parsed = urlparse(url)
+        if referer is None:
+            referer = f"{parsed.scheme}://{parsed.netloc}/"
+
+        headers = {
+            "Referer": referer,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+
+        resp = requests.get(url, timeout=DEFAULT_TIMEOUT * 4, stream=True, headers=headers)
+        resp.raise_for_status()
+
+        ext = self._guess_video_extension(url, resp.headers.get("Content-Type"))
+        filename = f"{uuid.uuid4().hex[:12]}{ext}"
+        filepath = os.path.join(self.temp_dir, filename)
+
+        with open(filepath, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=65536):
+                f.write(chunk)
+
+        self.downloaded_files.append(filepath)
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)
+        print(f"[image_downloader] Downloaded video: {url}")
+        print(f"  -> {filepath} ({size_mb:.1f} MB)")
         return filepath
 
     def download_all(self, urls: list[str]) -> list[str]:

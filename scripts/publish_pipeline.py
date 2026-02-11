@@ -2,7 +2,7 @@
 Unified publish pipeline for Xiaohongshu.
 
 Single CLI entry point that orchestrates:
-  chrome_launcher → login check → image download → form fill → (optional) publish
+  chrome_launcher → login check → image/video download → form fill → (optional) publish
 
 Usage:
     # Fill form only (default) - review in browser before publishing
@@ -20,6 +20,12 @@ Usage:
 
     # Use local image files instead of URLs
     python publish_pipeline.py --title "标题" --content "正文" --images img1.jpg img2.jpg
+
+    # Publish a video (local file)
+    python publish_pipeline.py --title "标题" --content "正文" --video video.mp4
+
+    # Publish a video (from URL)
+    python publish_pipeline.py --title "标题" --content "正文" --video-url "https://example.com/video.mp4"
 
 Exit codes:
     0 = success (READY_TO_PUBLISH or PUBLISHED)
@@ -211,13 +217,19 @@ def main():
     content_group.add_argument("--content", help="Article body text")
     content_group.add_argument("--content-file", help="Read content from UTF-8 file")
 
-    # Images
-    img_group = parser.add_mutually_exclusive_group(required=True)
-    img_group.add_argument(
+    # Media: images OR video (mutually exclusive)
+    media_group = parser.add_mutually_exclusive_group(required=True)
+    media_group.add_argument(
         "--image-urls", nargs="+", help="Image URLs to download"
     )
-    img_group.add_argument(
+    media_group.add_argument(
         "--images", nargs="+", help="Local image file paths"
+    )
+    media_group.add_argument(
+        "--video", help="Local video file path"
+    )
+    media_group.add_argument(
+        "--video-url", help="Video URL to download"
     )
 
     # Publish mode
@@ -338,11 +350,29 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)
 
-    # --- Step 3: Prepare images ---
+    # --- Determine publish mode: video or image ---
+    is_video_mode = bool(args.video or args.video_url)
+
+    # --- Step 3: Prepare media ---
     image_paths = []
+    video_path = None
     downloader = None
 
-    if args.image_urls:
+    if is_video_mode:
+        if args.video_url:
+            print("[pipeline] Step 3: Downloading video...")
+            downloader = ImageDownloader(temp_dir=args.temp_dir)
+            video_path = downloader.download_video(args.video_url)
+            if not video_path:
+                print("Error: Video download failed.", file=sys.stderr)
+                sys.exit(2)
+        else:
+            video_path = args.video
+            if not os.path.isfile(video_path):
+                print(f"Error: Video file not found: {video_path}", file=sys.stderr)
+                sys.exit(2)
+            print(f"[pipeline] Step 3: Using local video: {video_path}")
+    elif args.image_urls:
         print(f"[pipeline] Step 3: Downloading {len(args.image_urls)} image(s)...")
         downloader = ImageDownloader(temp_dir=args.temp_dir)
         image_paths = downloader.download_all(args.image_urls)
@@ -361,7 +391,14 @@ def main():
     # --- Step 4: Fill form ---
     print("[pipeline] Step 4: Filling form...")
     try:
-        publisher.publish(title=title, content=content, image_paths=image_paths)
+        if is_video_mode:
+            publisher.publish_video(
+                title=title, content=content, video_path=video_path
+            )
+        else:
+            publisher.publish(
+                title=title, content=content, image_paths=image_paths
+            )
         _select_topics(publisher, topic_tags)
         print("FILL_STATUS: READY_TO_PUBLISH")
     except CDPError as e:
