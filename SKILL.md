@@ -241,7 +241,7 @@ python scripts/cdp_publish.py --reuse-existing-tab search-feeds --keyword "春�
 # 获取笔记详情（feed_id 与 xsec_token 来自搜索结果）
 python scripts/cdp_publish.py get-feed-detail \
   --feed-id 67abc1234def567890123456 \
-  --xsec-token YOUR_XSEC_TOKEN
+  --xsec-token XSEC_TOKEN
 ```
 
 ### 7) 获取内容数据表（content_data）
