@@ -67,6 +67,7 @@ if sys.platform == "win32":
 import requests
 import websockets.sync.client as ws_client
 from feed_explorer import (
+    SEARCH_BASE_URL,
     LOCATION_OPTIONS,
     NOTE_TYPE_OPTIONS,
     PUBLISH_TIME_OPTIONS,
@@ -96,6 +97,7 @@ XHS_HOME_LOGIN_MODAL_KEYWORD = "登录后推荐更懂你的笔记"
 XHS_CONTENT_DATA_URL = "https://creator.xiaohongshu.com/statistics/data-analysis"
 XHS_CONTENT_DATA_API_PATH = "/api/galaxy/creator/datacenter/note/analyze/list"
 XHS_NOTIFICATION_MENTIONS_API_PATH = "/api/sns/web/v1/you/mentions"
+XHS_SEARCH_RECOMMEND_API_PATH = "/api/sns/web/v1/search/recommend"
 XHS_FEED_INACCESSIBLE_KEYWORDS = (
     "当前笔记暂时无法浏览",
     "该内容因违规已被删除",
@@ -141,6 +143,10 @@ VIDEO_PROCESS_TIMEOUT = 120  # seconds to wait for video processing
 VIDEO_PROCESS_POLL = 3  # seconds between video processing status checks
 ACTION_INTERVAL = 1  # seconds between actions
 MAX_TIMING_JITTER_RATIO = 0.7
+DEFAULT_LOGIN_CACHE_TTL_HOURS = 12.0
+LOGIN_CACHE_FILE = os.path.abspath(
+    os.path.join(SCRIPT_DIR, "..", "tmp", "login_status_cache.json")
+)
 
 
 def _normalize_timing_jitter(value: float) -> float:
@@ -151,6 +157,20 @@ def _normalize_timing_jitter(value: float) -> float:
 def _is_local_host(host: str) -> bool:
     """Return True when host points to the local machine."""
     return host.strip().lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+def _resolve_account_name(account_name: str | None) -> str:
+    """Resolve explicit or default account name for cache scoping."""
+    if account_name and account_name.strip():
+        return account_name.strip()
+    try:
+        from account_manager import get_default_account
+        resolved = get_default_account()
+        if isinstance(resolved, str) and resolved.strip():
+            return resolved.strip()
+    except Exception:
+        pass
+    return "default"
 
 
 def _build_search_filters_from_args(args) -> SearchFilters | None:
@@ -264,12 +284,115 @@ class XiaohongshuPublisher:
         host: str = CDP_HOST,
         port: int = CDP_PORT,
         timing_jitter: float = 0.25,
+        account_name: str | None = None,
     ):
         self.host = host
         self.port = port
         self.ws = None
         self._msg_id = 0
         self.timing_jitter = _normalize_timing_jitter(timing_jitter)
+        self.account_name = (account_name or "default").strip() or "default"
+        self.login_cache_ttl_hours = DEFAULT_LOGIN_CACHE_TTL_HOURS
+        self.login_cache_ttl_seconds = self.login_cache_ttl_hours * 3600
+        self.login_cache_file = LOGIN_CACHE_FILE
+
+    def _login_cache_key(self, scope: str) -> str:
+        """Build a unique cache key for one login scope."""
+        return f"{self.host}:{self.port}:{self.account_name}:{scope}"
+
+    def _load_login_cache(self) -> dict[str, Any]:
+        """Load login cache payload from local JSON file."""
+        if not os.path.exists(self.login_cache_file):
+            return {"entries": {}}
+
+        try:
+            with open(self.login_cache_file, "r", encoding="utf-8") as cache_file:
+                payload = json.load(cache_file)
+        except Exception:
+            return {"entries": {}}
+
+        if not isinstance(payload, dict):
+            return {"entries": {}}
+        entries = payload.get("entries")
+        if not isinstance(entries, dict):
+            payload["entries"] = {}
+        return payload
+
+    def _save_login_cache(self, payload: dict[str, Any]):
+        """Persist login cache payload to local JSON file."""
+        parent = os.path.dirname(self.login_cache_file)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(self.login_cache_file, "w", encoding="utf-8") as cache_file:
+            json.dump(payload, cache_file, ensure_ascii=False, indent=2)
+
+    def _get_cached_login_status(self, scope: str) -> bool | None:
+        """Return cached login status when cache is still fresh."""
+        if self.login_cache_ttl_seconds <= 0:
+            return None
+
+        payload = self._load_login_cache()
+        entries = payload.get("entries", {})
+        entry = entries.get(self._login_cache_key(scope))
+        if not isinstance(entry, dict):
+            return None
+
+        checked_at = entry.get("checked_at")
+        logged_in = entry.get("logged_in")
+        if not isinstance(checked_at, (int, float)) or not isinstance(logged_in, bool):
+            return None
+
+        age_seconds = time.time() - float(checked_at)
+        if age_seconds < 0 or age_seconds > self.login_cache_ttl_seconds:
+            return None
+
+        if not logged_in:
+            return None
+
+        age_minutes = int(age_seconds // 60)
+        print(
+            "[cdp_publish] Using cached login status "
+            f"({scope}, age={age_minutes}m, ttl={self.login_cache_ttl_hours:g}h)."
+        )
+        return logged_in
+
+    def _set_login_cache(self, scope: str, logged_in: bool):
+        """Save positive login status cache for a specific scope."""
+        if not logged_in:
+            self._clear_login_cache(scope=scope)
+            return
+
+        payload = self._load_login_cache()
+        entries = payload.setdefault("entries", {})
+        entries[self._login_cache_key(scope)] = {
+            "logged_in": True,
+            "checked_at": int(time.time()),
+        }
+        self._save_login_cache(payload)
+
+    def _clear_login_cache(self, scope: str | None = None):
+        """Clear login cache entries for current host/port/account."""
+        payload = self._load_login_cache()
+        entries = payload.get("entries", {})
+        if not isinstance(entries, dict) or not entries:
+            return
+
+        changed = False
+        if scope:
+            key = self._login_cache_key(scope)
+            if key in entries:
+                entries.pop(key, None)
+                changed = True
+        else:
+            prefix = self._login_cache_key("")
+            for key in list(entries.keys()):
+                if key.startswith(prefix):
+                    entries.pop(key, None)
+                    changed = True
+
+        if changed:
+            payload["entries"] = entries
+            self._save_login_cache(payload)
 
     def _sleep(self, base_seconds: float, minimum_seconds: float = 0.05):
         """Sleep with optional randomized jitter to avoid rigid timing patterns."""
@@ -432,6 +555,13 @@ class XiaohongshuPublisher:
         Returns True if logged in. If not logged in, prints instructions
         and returns False.
         """
+        scope = "creator"
+        cached_status = self._get_cached_login_status(scope)
+        if cached_status is not None:
+            if cached_status:
+                print("[cdp_publish] Login confirmed (cached).")
+            return cached_status
+
         self._navigate(XHS_CREATOR_LOGIN_CHECK_URL)
         self._sleep(2, minimum_seconds=1.0)
 
@@ -440,6 +570,7 @@ class XiaohongshuPublisher:
         print(f"[cdp_publish] Current URL: {current_url}")
 
         if "login" in current_url.lower():
+            self._set_login_cache(scope, logged_in=False)
             print(
                 "\n[cdp_publish] NOT LOGGED IN.\n"
                 "  Please scan the QR code in the Chrome window to log in,\n"
@@ -447,6 +578,7 @@ class XiaohongshuPublisher:
             )
             return False
 
+        self._set_login_cache(scope, logged_in=True)
         print("[cdp_publish] Login confirmed.")
         return True
 
@@ -501,12 +633,20 @@ class XiaohongshuPublisher:
         Login prompt modal keyword (default: "登录后推荐更懂你的笔记") indicates
         unauthenticated state for the xiaohongshu.com home/feed domain.
         """
+        scope = "home"
+        cached_status = self._get_cached_login_status(scope)
+        if cached_status is not None:
+            if cached_status:
+                print("[cdp_publish] Home login confirmed (cached).")
+            return cached_status
+
         self._navigate(XHS_HOME_URL)
         self._sleep(2, minimum_seconds=1.0)
 
         current_url = self._evaluate("window.location.href")
         print(f"[cdp_publish] Home URL: {current_url}")
         if isinstance(current_url, str) and "login" in current_url.lower():
+            self._set_login_cache(scope, logged_in=False)
             print(
                 "\n[cdp_publish] NOT LOGGED IN (HOME).\n"
                 "  Please log in on xiaohongshu.com and run this command again.\n"
@@ -516,6 +656,7 @@ class XiaohongshuPublisher:
         deadline = time.time() + max(1.0, wait_seconds)
         while time.time() < deadline:
             if self._home_login_prompt_visible(keyword):
+                self._set_login_cache(scope, logged_in=False)
                 print(
                     "\n[cdp_publish] NOT LOGGED IN (HOME).\n"
                     f"  Detected login prompt keyword: {keyword}\n"
@@ -524,6 +665,7 @@ class XiaohongshuPublisher:
                 return False
             self._sleep(0.7, minimum_seconds=0.2)
 
+        self._set_login_cache(scope, logged_in=True)
         print("[cdp_publish] Home login confirmed.")
         return True
 
@@ -545,6 +687,7 @@ class XiaohongshuPublisher:
             "origin": "https://creator.xiaohongshu.com",
             "storageTypes": "cookies,local_storage,session_storage",
         })
+        self._clear_login_cache()
         print("[cdp_publish] Cookies and storage cleared.")
 
     def open_login_page(self):
@@ -560,6 +703,7 @@ class XiaohongshuPublisher:
             # Already logged in, navigate to login page explicitly
             self._navigate("https://creator.xiaohongshu.com/login")
             self._sleep(2, minimum_seconds=1.0)
+        self._clear_login_cache()
         print(
             "\n[cdp_publish] Login page is open.\n"
             "  Please scan the QR code in the Chrome window to log in.\n"
@@ -569,15 +713,286 @@ class XiaohongshuPublisher:
     # Feed discovery actions
     # ------------------------------------------------------------------
 
+    def _prepare_search_input_keyword(self, keyword: str) -> dict[str, Any]:
+        """Focus search input and type keyword without submitting."""
+        keyword_literal = json.dumps(keyword, ensure_ascii=False)
+        result = self._evaluate(f"""
+            (async () => {{
+                const keyword = {keyword_literal};
+                const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+                const isVisible = (node) => {{
+                    if (!(node instanceof HTMLElement)) {{
+                        return false;
+                    }}
+                    if (node.offsetParent === null) {{
+                        return false;
+                    }}
+                    const rect = node.getBoundingClientRect();
+                    return rect.width >= 8 && rect.height >= 8;
+                }};
+
+                const selectors = [
+                    "#search-input",
+                    "input.search-input",
+                    "input[type='search']",
+                    "input[placeholder*='搜索']",
+                    "[class*='search'] input",
+                ];
+
+                let inputEl = null;
+                for (const selector of selectors) {{
+                    const nodes = document.querySelectorAll(selector);
+                    for (const node of nodes) {{
+                        if (!(node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement)) {{
+                            continue;
+                        }}
+                        if (node.disabled || !isVisible(node)) {{
+                            continue;
+                        }}
+                        inputEl = node;
+                        break;
+                    }}
+                    if (inputEl) {{
+                        break;
+                    }}
+                }}
+
+                if (!inputEl) {{
+                    return {{ ok: false, reason: "search_input_not_found" }};
+                }}
+
+                const setValue = (value) => {{
+                    const proto = inputEl instanceof HTMLTextAreaElement
+                        ? HTMLTextAreaElement.prototype
+                        : HTMLInputElement.prototype;
+                    const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+                    if (descriptor && typeof descriptor.set === "function") {{
+                        descriptor.set.call(inputEl, value);
+                    }} else {{
+                        inputEl.value = value;
+                    }}
+                    inputEl.dispatchEvent(new Event("input", {{ bubbles: true }}));
+                    inputEl.dispatchEvent(new Event("change", {{ bubbles: true }}));
+                }};
+
+                inputEl.focus();
+                await sleep(120);
+                setValue("");
+                await sleep(80);
+
+                let typed = "";
+                for (const ch of Array.from(keyword)) {{
+                    typed += ch;
+                    setValue(typed);
+                    await sleep(55 + Math.floor(Math.random() * 70));
+                }}
+                await sleep(220);
+                return {{ ok: true, reason: "" }};
+            }})()
+        """)
+        if not isinstance(result, dict):
+            return {"ok": False, "reason": "unexpected_result"}
+        reason = result.get("reason")
+        return {
+            "ok": bool(result.get("ok")),
+            "reason": reason if isinstance(reason, str) else "unknown",
+        }
+
+    def _extract_recommend_keywords_from_payload(
+        self,
+        payload: dict[str, Any],
+        keyword: str,
+        max_suggestions: int,
+    ) -> list[str]:
+        """Extract recommendation keywords from search recommend API payload."""
+        ignored_texts = {
+            "历史记录",
+            "猜你想搜",
+            "相关搜索",
+            "热门搜索",
+            "大家都在搜",
+            "清空历史",
+            "删除历史",
+        }
+
+        def normalize_text(value: str) -> str:
+            return " ".join(value.split()).strip()
+
+        def push_text(output: list[str], seen: set[str], value: str):
+            normalized = normalize_text(value)
+            if not normalized or normalized == keyword:
+                return
+            if normalized in ignored_texts:
+                return
+            if len(normalized) < 2 or len(normalized) > 36:
+                return
+            if normalized in seen:
+                return
+            seen.add(normalized)
+            output.append(normalized)
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        stack: list[Any] = [payload]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if isinstance(value, str):
+                        key_lc = key.lower()
+                        if any(
+                            hint in key_lc
+                            for hint in (
+                                "word",
+                                "query",
+                                "keyword",
+                                "text",
+                                "title",
+                                "name",
+                                "suggest",
+                            )
+                        ):
+                            push_text(ordered, seen, value)
+                        continue
+                    if isinstance(value, (dict, list)):
+                        stack.append(value)
+            elif isinstance(node, list):
+                for item in node:
+                    if isinstance(item, str):
+                        push_text(ordered, seen, item)
+                        continue
+                    if isinstance(item, (dict, list)):
+                        stack.append(item)
+
+        keyword_prefix = keyword[:2]
+        ranked: list[tuple[int, int, str]] = []
+        for idx, text in enumerate(ordered):
+            score = 0
+            if keyword and (keyword in text or text in keyword):
+                score += 3
+            elif keyword_prefix and keyword_prefix in text:
+                score += 1
+            ranked.append((score, idx, text))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [item[2] for item in ranked[: max(1, max_suggestions)]]
+
+    def _capture_search_recommendations_via_network(
+        self,
+        keyword: str,
+        wait_seconds: float = 8.0,
+        max_suggestions: int = 12,
+    ) -> dict[str, Any]:
+        """Capture recommend API response from real page traffic."""
+        if not self.ws:
+            raise CDPError("Not connected. Call connect() first.")
+
+        self._send("Network.enable", {"maxPostDataSize": 65536})
+        self._send("Network.setCacheDisabled", {"cacheDisabled": True})
+
+        typed = self._prepare_search_input_keyword(keyword)
+        if not typed.get("ok"):
+            reason = typed.get("reason") or "type_keyword_failed"
+            return {"ok": False, "reason": str(reason), "suggestions": []}
+
+        deadline = time.time() + max(2.0, float(wait_seconds))
+        request_meta_by_id: dict[str, dict[str, str]] = {}
+        exact_match: tuple[str, str] | None = None
+        fallback_match: tuple[str, str] | None = None
+
+        while time.time() < deadline:
+            timeout = min(1.0, max(0.1, deadline - time.time()))
+            try:
+                raw = self.ws.recv(timeout=timeout)
+            except TimeoutError:
+                continue
+
+            message = json.loads(raw)
+            method = message.get("method")
+            params = message.get("params", {})
+
+            if method == "Network.requestWillBeSent":
+                request_id = params.get("requestId")
+                request = params.get("request", {})
+                if isinstance(request_id, str):
+                    request_meta_by_id[request_id] = {
+                        "url": request.get("url", ""),
+                        "method": str(request.get("method", "")).upper(),
+                    }
+                continue
+
+            if method != "Network.responseReceived":
+                continue
+
+            request_id = params.get("requestId")
+            if not isinstance(request_id, str):
+                continue
+
+            request_meta = request_meta_by_id.get(request_id, {})
+            request_url = request_meta.get("url", "")
+            if XHS_SEARCH_RECOMMEND_API_PATH not in request_url:
+                continue
+            if request_meta.get("method") == "OPTIONS":
+                continue
+
+            status = int(params.get("response", {}).get("status") or 0)
+            if status != 200:
+                continue
+
+            fallback_match = (request_id, request_url)
+            try:
+                query = parse_qs(urlparse(request_url).query)
+                request_keyword = (query.get("keyword") or [""])[0].strip()
+            except Exception:
+                request_keyword = ""
+
+            if request_keyword == keyword:
+                exact_match = (request_id, request_url)
+                break
+
+        target = exact_match or fallback_match
+        if not target:
+            return {"ok": False, "reason": "recommend_request_timeout", "suggestions": []}
+
+        request_id, request_url = target
+        body_result = self._send("Network.getResponseBody", {"requestId": request_id})
+        body_text = body_result.get("body", "")
+        if body_result.get("base64Encoded"):
+            body_text = base64.b64decode(body_text).decode("utf-8", errors="replace")
+
+        try:
+            payload = json.loads(body_text)
+        except json.JSONDecodeError:
+            return {"ok": False, "reason": "recommend_invalid_json", "suggestions": []}
+        if not isinstance(payload, dict):
+            return {"ok": False, "reason": "recommend_invalid_payload", "suggestions": []}
+
+        suggestions = self._extract_recommend_keywords_from_payload(
+            payload=payload,
+            keyword=keyword,
+            max_suggestions=max_suggestions,
+        )
+        return {
+            "ok": True,
+            "reason": "",
+            "request_url": request_url,
+            "suggestions": suggestions,
+        }
+
     def search_feeds(
         self,
         keyword: str,
         filters: SearchFilters | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """
         Search Xiaohongshu feeds by keyword and optional filters.
 
-        Returns a list of feed objects extracted from `window.__INITIAL_STATE__`.
+        Returns:
+            {
+                "keyword": str,
+                "recommended_keywords": list[str],  # dropdown related terms
+                "feeds": list[dict[str, Any]],      # extracted from __INITIAL_STATE__
+            }
         """
         if not self.ws:
             raise CDPError("Not connected. Call connect() first.")
@@ -586,8 +1001,7 @@ class XiaohongshuPublisher:
         if not keyword:
             raise CDPError("Keyword cannot be empty.")
 
-        search_url = make_search_url(keyword)
-        self._navigate(search_url)
+        self._navigate(SEARCH_BASE_URL)
         self._sleep(2, minimum_seconds=1.0)
 
         explorer = FeedExplorer(
@@ -596,6 +1010,22 @@ class XiaohongshuPublisher:
             move_mouse=self._move_mouse,
             click_mouse=self._click_mouse,
         )
+
+        recommendation_result = self._capture_search_recommendations_via_network(keyword=keyword)
+        recommended_keywords = recommendation_result.get("suggestions", [])
+
+        if not recommendation_result.get("ok"):
+            reason = recommendation_result.get("reason") or "recommend_api_failed"
+            print(
+                "[cdp_publish] Warning: failed to capture search recommendations via API. "
+                f"reason={reason}"
+            )
+
+        # Always navigate with keyword URL to keep feed extraction stable.
+        search_url = make_search_url(keyword)
+        self._navigate(search_url)
+        self._sleep(2, minimum_seconds=1.0)
+
         try:
             feeds = explorer.search_feeds(keyword=keyword, filters=filters)
         except FeedExplorerError as e:
@@ -603,9 +1033,13 @@ class XiaohongshuPublisher:
 
         print(
             f"[cdp_publish] Search completed. keyword={keyword}, "
-            f"feeds={len(feeds)}"
+            f"recommended_keywords={len(recommended_keywords)}, feeds={len(feeds)}"
         )
-        return feeds
+        return {
+            "keyword": keyword,
+            "recommended_keywords": recommended_keywords,
+            "feeds": feeds,
+        }
 
     def get_feed_detail(self, feed_id: str, xsec_token: str) -> dict[str, Any]:
         """
@@ -2002,6 +2436,7 @@ def main():
     port = args.port
     headless = args.headless
     account = args.account
+    cache_account_name = _resolve_account_name(account)
     reuse_existing_tab = args.reuse_existing_tab
     timing_jitter = _normalize_timing_jitter(args.timing_jitter)
     local_mode = _is_local_host(host)
@@ -2011,7 +2446,6 @@ def main():
             "[cdp_publish] Warning: --timing-jitter out of range. "
             f"Clamped to {timing_jitter:.2f}."
         )
-
     # Account management commands that don't need Chrome
     if args.command == "list-accounts":
         from account_manager import list_accounts
@@ -2071,10 +2505,16 @@ def main():
         )
 
     print(f"[cdp_publish] Timing jitter ratio: {timing_jitter:.2f}")
+    print(f"[cdp_publish] Login cache: enabled (ttl={DEFAULT_LOGIN_CACHE_TTL_HOURS:g}h).")
     if reuse_existing_tab:
         print("[cdp_publish] Tab selection mode: prefer reusing existing tab.")
 
-    publisher = XiaohongshuPublisher(host=host, port=port, timing_jitter=timing_jitter)
+    publisher = XiaohongshuPublisher(
+        host=host,
+        port=port,
+        timing_jitter=timing_jitter,
+        account_name=cache_account_name,
+    )
     try:
         if args.command == "check-login":
             publisher.connect(reuse_existing_tab=reuse_existing_tab)
@@ -2125,9 +2565,13 @@ def main():
                 sys.exit(1)
 
             filters = _build_search_filters_from_args(args)
-            feeds = publisher.search_feeds(keyword=args.keyword, filters=filters)
+            search_result = publisher.search_feeds(keyword=args.keyword, filters=filters)
+            feeds = search_result.get("feeds", [])
+            recommended_keywords = search_result.get("recommended_keywords", [])
             payload = {
                 "keyword": args.keyword,
+                "recommended_keywords_count": len(recommended_keywords),
+                "recommended_keywords": recommended_keywords,
                 "count": len(feeds),
                 "feeds": feeds,
             }

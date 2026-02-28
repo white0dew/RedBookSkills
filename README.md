@@ -11,6 +11,7 @@
 - **远程 CDP 支持**：可通过 `--host` / `--port` 连接远程 Chrome 调试端口
 - **图片下载**：支持从 URL 自动下载图片，自动添加 Referer 绕过防盗链
 - **登录检测**：自动检测登录状态，未登录时自动切换到有窗口模式扫码
+- **登录状态缓存**：`check_login/check_home_login` 默认本地缓存 12 小时，减少重复跳转校验
 - **内容检索与详情读取**：支持搜索笔记并获取指定笔记详情（含评论数据）
 - **笔记评论**：支持按 `feed_id + xsec_token` 对指定笔记发表一级评论
 - **通知评论抓取**：支持在 `/notification` 页面抓取 `you/mentions` 接口返回
@@ -155,6 +156,8 @@ python scripts/cdp_publish.py post-comment-to-feed \
 python scripts/cdp_publish.py get-notification-mentions
 ```
 
+说明：`search-feeds` 会先在搜索框输入关键词，抓取下拉推荐词（`recommended_keywords`），再回车拉取 feed 列表。
+
 ### 6. 获取内容数据表（content_data）
 
 ```bash
@@ -247,6 +250,8 @@ python scripts/cdp_publish.py switch-account
 ```
 
 说明：`search-feeds`、`get-feed-detail`、`post-comment-to-feed` 与 `get-notification-mentions` 会校验 `xiaohongshu.com` 主页登录态（非创作者中心登录态）。
+说明：登录态检查默认启用本地缓存（12 小时，仅缓存“已登录”结果），到期后自动重新走网页校验。
+说明：`search-feeds` 输出新增 `recommended_keywords_count` 与 `recommended_keywords` 字段，表示输入关键词后回车前的下拉推荐词。
 说明：`content-data` 会校验创作者中心登录态，并抓取 `statistics/data-analysis` 页面中的笔记基础信息表。
 
 ### chrome_launcher.py

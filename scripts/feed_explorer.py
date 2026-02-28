@@ -665,7 +665,19 @@ class FeedExplorer:
                 for value in values:
                     self._apply_single_filter(value)
 
-        return self._extract_search_feeds()
+        feeds = self._extract_search_feeds()
+        if feeds:
+            return feeds
+
+        # On some page variants `search.feeds` is initialized as [] first and
+        # filled asynchronously. Retry briefly before returning empty results.
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            self._sleep(0.6, minimum_seconds=0.2)
+            feeds = self._extract_search_feeds()
+            if feeds:
+                return feeds
+        return feeds
 
     def get_feed_detail(self, feed_id: str) -> dict[str, Any]:
         """Extract feed detail from the current feed detail page."""

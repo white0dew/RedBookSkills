@@ -20,6 +20,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+search_result.txt
 
 # Virtual environments
 venv/

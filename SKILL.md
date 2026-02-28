@@ -56,7 +56,7 @@ metadata:
 ## 内容检索与互动流程（搜索/详情/评论/内容数据）
 
 1. 先检查小红书主页登录状态（`XHS_HOME_URL`，非创作者中心）。
-2. 执行 `search-feeds` 获取笔记列表。
+2. 执行 `search-feeds` 获取笔记列表（默认会先抓取搜索下拉推荐词，结果字段为 `recommended_keywords`）。
 3. 若用户需要详情，从搜索结果中取 `id` + `xsecToken` 再执行 `get-feed-detail`。
 4. 若用户需要发表评论，执行 `post-comment-to-feed`（一级评论；必填 `feed_id` / `xsec_token` / `content`）。
 5. 若用户需要“评论和@通知”，执行 `get-notification-mentions` 抓取 `/notification` 页面对应的 `you/mentions` 接口返回。
@@ -233,6 +233,9 @@ python scripts/cdp_publish.py get-feed-detail \
   --feed-id 67abc1234def567890123456 \
   --xsec-token XSEC_TOKEN
 ```
+
+说明：`search-feeds` 输出中包含 `recommended_keywords_count` 与 `recommended_keywords`，表示回车前搜索框下拉推荐词。
+说明：`check-login` 与主页登录检查默认启用本地缓存（12h，仅缓存“已登录”），到期后自动重新网页校验。
 
 ### 6) 给笔记发表评论（一级评论）
 

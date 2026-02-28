@@ -77,6 +77,20 @@ def _is_local_host(host: str) -> bool:
     return host.strip().lower() in {"127.0.0.1", "localhost", "::1"}
 
 
+def _resolve_account_name(account_name: str | None) -> str:
+    """Resolve explicit or default account name for login cache scoping."""
+    if account_name and account_name.strip():
+        return account_name.strip()
+    try:
+        from account_manager import get_default_account
+        resolved = get_default_account()
+        if isinstance(resolved, str) and resolved.strip():
+            return resolved.strip()
+    except Exception:
+        pass
+    return "default"
+
+
 def _jitter_ms(base_ms: int, jitter_ratio: float, minimum_ms: int = 0) -> int:
     """Return a randomized delay in milliseconds around the base value."""
     base = max(minimum_ms, int(base_ms))
@@ -368,6 +382,7 @@ def main():
     port = args.port
     headless = args.headless
     account = args.account
+    cache_account_name = _resolve_account_name(account)
     reuse_existing_tab = args.reuse_existing_tab
     timing_jitter = _normalize_timing_jitter(args.timing_jitter)
     local_mode = _is_local_host(host)
@@ -409,7 +424,7 @@ def main():
 
     # --- Step 1: Ensure Chrome is running ---
     mode_label = "headless" if headless else "headed"
-    account_label = account or "default"
+    account_label = cache_account_name
     print(
         f"[pipeline] Step 1: Ensuring Chrome is running "
         f"({mode_label}, account: {account_label}, host: {host}, port: {port})..."
@@ -429,7 +444,12 @@ def main():
 
     # --- Step 2: Connect and check login ---
     print("[pipeline] Step 2: Checking login status...")
-    publisher = XiaohongshuPublisher(host=host, port=port, timing_jitter=timing_jitter)
+    publisher = XiaohongshuPublisher(
+        host=host,
+        port=port,
+        timing_jitter=timing_jitter,
+        account_name=cache_account_name,
+    )
     try:
         publisher.connect(reuse_existing_tab=reuse_existing_tab)
         logged_in = publisher.check_login()
