@@ -2,12 +2,15 @@
 Unified publish pipeline for Xiaohongshu.
 
 Single CLI entry point that orchestrates:
-  chrome_launcher → login check → image/video download → form fill → (optional) publish
+  chrome_launcher → login check → image/video download → form fill → publish (default)
 
 Usage:
-    # Fill form only (default) - review in browser before publishing
+    # Publish immediately after filling (default behavior)
     python publish_pipeline.py --title "标题" --content "正文" --image-urls URL1 URL2
     python publish_pipeline.py --title-file t.txt --content-file body.txt --image-urls URL1
+
+    # Fill form only for manual review (preview mode)
+    python publish_pipeline.py --title "标题" --content "正文" --image-urls URL1 --preview
 
     # Headless mode (no GUI window) - faster for automated publishing
     python publish_pipeline.py --headless --title-file t.txt --content-file body.txt --image-urls URL1
@@ -15,7 +18,7 @@ Usage:
     # Publish to a specific account
     python publish_pipeline.py --account myaccount --title "标题" --content "正文" --image-urls URL1
 
-    # Fill and auto-publish in one step
+    # Explicit auto-publish flag (optional compatibility flag)
     python publish_pipeline.py --title "标题" --content "正文" --image-urls URL1 --auto-publish
 
     # Prefer reusing existing tab (reduce focus switching in headed mode)
@@ -23,6 +26,8 @@ Usage:
 
     # Use local image files instead of URLs
     python publish_pipeline.py --title "标题" --content "正文" --images img1.jpg img2.jpg
+    # Skip local file check (for WSL/remote CDP + Windows/UNC paths)
+    python publish_pipeline.py --title "标题" --content "正文" --images "\\\\wsl.localhost\\Ubuntu\\home\\me\\a.jpg" --skip-file-check
 
     # Publish a video (local file)
     python publish_pipeline.py --title "标题" --content "正文" --video video.mp4
@@ -31,7 +36,7 @@ Usage:
     python publish_pipeline.py --title "标题" --content "正文" --video-url "https://example.com/video.mp4"
 
 Exit codes:
-    0 = success (READY_TO_PUBLISH or PUBLISHED)
+    0 = success (PUBLISHED, or READY_TO_PUBLISH in preview mode)
     1 = not logged in (NOT_LOGGED_IN) - headless auto-fallback will restart headed
     2 = error (see stderr)
 """
@@ -146,6 +151,25 @@ def _extract_topic_tags_from_last_line(content: str) -> tuple[str, list[str]]:
 
     body = "\n".join(lines[:-1]).strip()
     return body, parts
+
+
+def _verify_local_files_exist(
+    file_paths: list[str],
+    media_label: str,
+    skip_file_check: bool,
+):
+    """Verify local files exist unless explicitly skipped."""
+    if skip_file_check:
+        print(
+            f"[pipeline] Step 3: Skipping local {media_label} file check "
+            "(--skip-file-check)."
+        )
+        return
+
+    for file_path in file_paths:
+        if not os.path.isfile(file_path):
+            print(f"Error: {media_label} file not found: {file_path}", file=sys.stderr)
+            sys.exit(2)
 
 
 def _select_topics(
@@ -312,7 +336,10 @@ def main():
         "--auto-publish",
         action="store_true",
         default=False,
-        help="Click publish button after filling (default: fill only)",
+        help=(
+            "Compatibility flag. Publish is now the default behavior unless "
+            "--preview is enabled."
+        ),
     )
 
     parser.add_argument(
@@ -355,6 +382,15 @@ def main():
         "--temp-dir",
         default=None,
         help="Directory for downloaded images (default: auto-created temp dir)",
+    )
+    parser.add_argument(
+        "--skip-file-check",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip local media file existence check. Useful when running in WSL "
+            "or using remote CDP with Windows/UNC paths."
+        ),
     )
 
     # Account selection
@@ -493,9 +529,11 @@ def main():
                 sys.exit(2)
         else:
             video_path = args.video
-            if not os.path.isfile(video_path):
-                print(f"Error: Video file not found: {video_path}", file=sys.stderr)
-                sys.exit(2)
+            _verify_local_files_exist(
+                file_paths=[video_path],
+                media_label="Video",
+                skip_file_check=args.skip_file_check,
+            )
             print(f"[pipeline] Step 3: Using local video: {video_path}")
     elif args.image_urls:
         print(f"[pipeline] Step 3: Downloading {len(args.image_urls)} image(s)...")
@@ -506,11 +544,11 @@ def main():
             sys.exit(2)
     else:
         image_paths = args.images
-        # Verify local files exist
-        for p in image_paths:
-            if not os.path.isfile(p):
-                print(f"Error: Image file not found: {p}", file=sys.stderr)
-                sys.exit(2)
+        _verify_local_files_exist(
+            file_paths=image_paths,
+            media_label="Image",
+            skip_file_check=args.skip_file_check,
+        )
         print(f"[pipeline] Step 3: Using {len(image_paths)} local image(s).")
 
     # --- Step 4: Fill form ---
@@ -533,8 +571,10 @@ def main():
         sys.exit(2)
 
     # --- Step 5: Publish (optional) ---
-    should_publish = args.auto_publish and not args.preview
-    if args.preview and args.auto_publish:
+    should_publish = not args.preview
+    if args.auto_publish:
+        print("[pipeline] --auto-publish is now default and can be omitted.")
+    if args.preview:
         print("[pipeline] Preview mode is on, skipping publish click.")
 
     if should_publish:

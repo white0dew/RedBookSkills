@@ -1,3 +1,16 @@
+# 新增功能计划：publish_pipeline 默认自动发布 + preview 人工确认
+
+## 目标
+- 调整 `scripts/publish_pipeline.py` 的发布开关语义：默认自动点击发布，传 `--preview` 时仅填充并停留在发布页。
+
+## 实施步骤
+- [x] 修改 `publish_pipeline.py` 的发布判定逻辑：默认发布，`--preview` 跳过点击。
+- [x] 保留 `--auto-publish` 兼容参数，并补充提示文案。
+- [x] 同步更新 `README.md` 与 `SKILL.md` 的命令示例与参数说明。
+- [ ] 冒烟验证：分别执行默认发布与 `--preview` 预览，确认行为符合预期。
+
+---
+
 # 新增功能计划：post_comment_to_feed（一级评论）
 
 ## 目标
@@ -55,3 +68,17 @@
 - [x] 缓存策略固定写死为 12h（不新增 CLI 参数）。
 - [x] 更新 `README.md` 与 `SKILL.md` 的命令示例与说明。
 - [ ] 冒烟验证：执行 `check-login` 两次确认第二次命中缓存；等待缓存过期后验证会自动重新网页校验。
+
+---
+
+# 新增功能计划：publish_pipeline 增加 --skip-file-check（WSL/远程 CDP 路径兼容）
+
+## 目标
+- 在 `scripts/publish_pipeline.py` 增加 `--skip-file-check`，用于跳过本地媒体路径预校验，兼容 WSL/远程 CDP 下的 Windows/UNC 路径。
+
+## 实施步骤
+- [x] 在 CLI 增加 `--skip-file-check` 参数（默认关闭）。
+- [x] 将本地图片/视频的 `os.path.isfile()` 校验收敛到统一函数，支持按参数跳过。
+- [x] 保持默认行为不变：未传参数时仍执行严格路径校验。
+- [x] 更新 `README.md` 与 `SKILL.md` 的说明与示例命令。
+- [ ] 冒烟验证：在 WSL + UNC 路径下分别执行图文与视频发布流程，确认可进入上传步骤。

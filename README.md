@@ -69,14 +69,15 @@ python scripts/chrome_launcher.py --kill
 ### 3. 发布内容
 
 ```bash
-# 无头模式（推荐）
+# 无头模式（推荐，默认自动发布）
 python scripts/publish_pipeline.py --headless \
     --title "文章标题" \
     --content "文章正文" \
     --image-urls "https://example.com/image.jpg"
 
-# 有窗口模式（可预览）
+# 有窗口预览模式（仅填充，不自动点发布）
 python scripts/publish_pipeline.py \
+    --preview \
     --title "文章标题" \
     --content "文章正文" \
     --image-urls "https://example.com/image.jpg"
@@ -108,6 +109,13 @@ python scripts/publish_pipeline.py --headless \
     --title "文章标题" \
     --content "文章正文" \
     --images "C:\path\to\image.jpg"
+
+# WSL/远程 CDP + Windows/UNC 路径可跳过本地文件预校验
+python scripts/publish_pipeline.py --headless \
+    --title "文章标题" \
+    --content "文章正文" \
+    --images "\\wsl.localhost\Ubuntu\home\user\image.jpg" \
+    --skip-file-check
 
 ```
 
@@ -194,16 +202,20 @@ python scripts/publish_pipeline.py [选项]
   --content-file FILE    从文件读取正文
   --image-urls URL...    图片 URL 列表
   --images FILE...       本地图片文件列表
+  --skip-file-check      跳过本地媒体文件存在性检查（WSL/远程 CDP/UNC 路径可用）
   --host HOST            CDP 主机地址（默认 127.0.0.1）
   --port PORT            CDP 端口（默认 9222）
   --headless             无头模式（无浏览器窗口）
   --reuse-existing-tab   优先复用已有标签页（默认关闭）
   --account NAME         指定账号
-  --auto-publish         自动点击发布（跳过确认）
+  --auto-publish         兼容参数：默认已自动发布（可省略）
+  --preview              预览模式：仅填充内容，不点击发布
 ```
 
 说明：启用 `--reuse-existing-tab` 后，发布流程仍会自动导航到发布页，因此会刷新到目标页面再继续执行。
 说明：当 `--host` 非 `127.0.0.1/localhost` 时为远程模式，会跳过本地 `chrome_launcher.py` 的自动启动/重启逻辑，请确保远程 CDP 地址可达。
+说明：当控制端运行在 WSL、但媒体路径使用 Windows/UNC（如 `\\wsl.localhost\...`）时，可加 `--skip-file-check` 跳过 Linux 侧 `isfile` 预校验。
+说明：`publish_pipeline.py` 默认会自动点击发布；如需人工确认，请显式加 `--preview`。
 
 ### cdp_publish.py
 

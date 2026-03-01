@@ -59,6 +59,7 @@ python scripts/publish_pipeline.py --headless \
 
 ```bash
 python scripts/publish_pipeline.py \
+    --preview \
     --title-file title.txt \
     --content-file content.txt \
     --image-urls "URL1" "URL2"

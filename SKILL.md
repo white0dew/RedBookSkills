@@ -146,6 +146,7 @@ python scripts/publish_pipeline.py --headless \
 
 ```bash
 python scripts/publish_pipeline.py  --title-file title.txt \
+  --preview \
   --content-file content.txt \
   --image-urls "URL1" "URL2"
 
@@ -161,6 +162,7 @@ python scripts/publish_pipeline.py --host 10.0.0.12 --title-file title.txt \
 ```
 
 远程模式说明：当 `--host` 不是 `127.0.0.1/localhost` 时，脚本会跳过本地 `chrome_launcher.py` 的自动启动/重启逻辑。
+发布模式说明：`publish_pipeline.py` 默认自动点击发布；如需停留在发布页人工确认，请加 `--preview`。
 
 
 ### 3) 无头发布 or 有头发布  使用本地图片发布
@@ -176,7 +178,16 @@ python scripts/publish_pipeline.py --headless \
 python scripts/publish_pipeline.py  --title-file title.txt \
   --content-file content.txt \
   --images "./images/pic1.jpg" "./images/pic2.jpg"
+
+# WSL/远程 CDP + Windows/UNC 路径：跳过本地文件预校验
+python scripts/publish_pipeline.py --headless \
+  --title-file title.txt \
+  --content-file content.txt \
+  --images "\\\\wsl.localhost\\Ubuntu\\home\\user\\pic1.jpg" \
+  --skip-file-check
 ```
+
+说明：当控制端在 WSL 运行，且传入 Windows/UNC 路径（如 `\\wsl.localhost\...`）时，可加 `--skip-file-check`，避免 Linux 侧 `os.path.isfile()` 误判不存在。
 
 ### 3.5) 视频发布（本地视频文件）
 
