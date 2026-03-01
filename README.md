@@ -310,5 +310,11 @@ python scripts/chrome_launcher.py --kill
 
 MIT License
 
+## 联系方式
+
+微信号：`whitedewstory`
+
+<img src="public/whitedew.jpg" alt="微信二维码" width="240" />
+
 ## 致谢
 灵感来自：[Post-to-xhs](https://github.com/Angiin/Post-to-xhs)
