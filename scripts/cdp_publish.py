@@ -285,6 +285,7 @@ class XiaohongshuPublisher:
         port: int = CDP_PORT,
         timing_jitter: float = 0.25,
         account_name: str | None = None,
+        no_launch: bool = False,
     ):
         self.host = host
         self.port = port
@@ -295,6 +296,7 @@ class XiaohongshuPublisher:
         self.login_cache_ttl_hours = DEFAULT_LOGIN_CACHE_TTL_HOURS
         self.login_cache_ttl_seconds = self.login_cache_ttl_hours * 3600
         self.login_cache_file = LOGIN_CACHE_FILE
+        self.no_launch = no_launch
 
     def _login_cache_key(self, scope: str) -> str:
         """Build a unique cache key for one login scope."""
@@ -420,7 +422,7 @@ class XiaohongshuPublisher:
                 return resp.json()
             except Exception as e:
                 if attempt == 0:
-                    if _is_local_host(self.host):
+                    if _is_local_host(self.host) and not getattr(self, "no_launch", False):
                         print(f"[cdp_publish] CDP connection failed ({e}), restarting Chrome...")
                         from chrome_launcher import ensure_chrome
                         ensure_chrome(port=self.port)
@@ -2292,6 +2294,14 @@ def main():
             "Useful in headed mode to reduce foreground focus switching."
         ),
     )
+    parser.add_argument(
+        "--no-launch",
+        action="store_true",
+        help=(
+            "Do not auto-launch Chrome via chrome_launcher. "
+            "Connect only to an already-running Chrome with --host/--port."
+        ),
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # check-login
@@ -2494,14 +2504,19 @@ def main():
     if args.command in ("login", "re-login", "switch-account"):
         headless = False
 
-    if local_mode:
+    if local_mode and not args.no_launch:
         if not ensure_chrome(port=port, headless=headless, account=account):
             print("Failed to start Chrome. Exiting.")
             sys.exit(1)
-    else:
+    elif not local_mode:
         print(
             f"[cdp_publish] Remote CDP mode enabled: {host}:{port}. "
             "Skipping local Chrome launch/restart."
+        )
+    elif args.no_launch:
+        print(
+            f"[cdp_publish] no-launch mode: will connect to existing Chrome on {host}:{port} "
+            "without auto-launch."
         )
 
     print(f"[cdp_publish] Timing jitter ratio: {timing_jitter:.2f}")
@@ -2514,6 +2529,7 @@ def main():
         port=port,
         timing_jitter=timing_jitter,
         account_name=cache_account_name,
+        no_launch=args.no_launch,
     )
     try:
         if args.command == "check-login":

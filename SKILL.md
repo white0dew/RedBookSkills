@@ -1,11 +1,23 @@
 ---
-name: RedBookSkills
+name: xiaohongshu-publisher
 description: |
-  将图文/视频内容自动发布到小红书（XHS）。
-  支持三类任务：发布图文、发布视频、仅启动测试浏览器（不发布）。
+  自动将图文/视频内容发布到小红书（XHS）。
+  支持：发布图文、发布视频、搜索笔记、获取笔记详情、发表评论、抓取内容数据、仅启动测试浏览器（不发布）。
 metadata:
-  trigger: 发布内容到小红书
-  source: Angiin/Post-to-xhs
+  {
+    "openclaw": {
+      "emoji": "📕",
+      "requires": { "bins": ["python3"] },
+      "install": [
+        {
+          "id": "venv",
+          "kind": "script",
+          "label": "Install Python dependencies",
+          "script": "cd {baseDir} && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+        }
+      ]
+    }
+  }
 ---
 
 # Post-to-xhs
@@ -292,3 +304,61 @@ python scripts/cdp_publish.py get_notification_mentions
 - 登录失败：提示用户重新扫码登录并重试。
 - 图片下载失败：提示更换图片 URL 或改用本地图片。
 - 页面选择器失效：提示检查 `scripts/cdp_publish.py` 中选择器并更新。
+
+---
+
+## OpenClaw 集成说明
+
+本 skill 已适配 OpenClaw。安装位置：`~/.agents/skills/xiaohongshu-publisher/`（或 `~/.openclaw/skills/` 符号链接）。
+
+### 前置条件
+
+1. 确保 `python3` 在系统 `PATH` 中。
+2. 首次使用时，OpenClaw 会自动运行安装指令，创建虚拟环境并安装依赖（如 `requests`, `websockets`）。
+3. 需要安装 Google Chrome 浏览器，并允许远程调试（本 skill 会通过 `chrome_launcher.py` 自动启动带 CDP 的 Chrome）。
+
+### 在 OpenClaw 中的使用
+
+当用户请求以下操作时，agent 可以使用本 skill：
+- "发布小红书图文/视频"
+- "测试小红书登录状态"
+- "搜索小红书笔记"
+- "获取笔记详情"
+- "给笔记评论"
+- "查看评论/@通知"
+- "抓取内容数据"
+
+Agent 会调用 `exec` 工具运行相应脚本，并传递标题、正文、图片/视频路径或 URL。调用示例（agent 内部自动构造）：
+
+```bash
+cd {baseDir}
+python3 scripts/publish_pipeline.py --headless \
+  --title-file title.txt \
+  --content-file content.txt \
+  --image-urls "https://example.com/image.jpg"
+```
+
+**注意**：
+- 如果文件的相对路径（如 `./images/pic.jpg`），agent 应先写入 `title.txt` 和 `content.txt` 到 `{baseDir}`，并确保传入的媒体路径为绝对路径，或将工作目录设为 `{baseDir}` 再运行命令。
+- 首次运行可能需要扫码登录，建议在预览模式（`--preview`）下人工检查。
+- 视频发布时请使用 `--video` 或 `--video-url`，不要同时使用图片参数。
+
+### 多账号管理
+
+使用 `scripts/cdp_publish.py` 的账号命令管理多个小红书账号：
+```bash
+python3 scripts/cdp_publish.py add-account work --alias "工作号"
+python3 scripts/cdp_publish.py --account work login
+```
+发布时添加 `--account work` 选择账号。
+
+### 故障排查
+
+- 检查 `python3` 是否可用：`python3 --version`
+- 验证依赖已安装：`cd {baseDir} && source .venv/bin/activate && pip list`
+- 查看日志：OpenClaw 的 `~/.openclaw/logs/` 下按日期归档
+- 如果 Chrome 启动失败，确认 Chrome 版本与 `chromedriver` 匹配（本项目使用 CDP，无需单独 chromedriver）
+
+### 配置（可选）
+
+如需自定义 Chrome 调试端口，可在命令中添加 `--port 9223`。远程 CDP 使用 `--host <ip>`。
