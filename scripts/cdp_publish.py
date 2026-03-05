@@ -1998,37 +1998,42 @@ class XiaohongshuPublisher:
         raise CDPError("Could not find content editor element.")
 
     def _set_schedule_post_time(self, post_time: str | None):
-        """Set schedle publish time if necessary"""
-        if post_time == None:
+        """Set schedule publish time if necessary."""
+        if post_time is None:
             return
-        
+
         print(f"[cdp_publish] Setting schedule publish time: {post_time}")
         self._sleep(ACTION_INTERVAL, minimum_seconds=0.25)
 
+        escaped = json.dumps(post_time)
         post_time_enabled = self._evaluate(f"""
             (async function() {{
                 try {{
                     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-                    // Click scheduled publish btn
-                    var selector = '.post-time-wrapper .d-switch';
-                    var element = document.querySelector(selector);
-                    element.click();
+                    // Click scheduled publish toggle
+                    var toggleSelector = '.post-time-wrapper .d-switch';
+                    var toggleEl = document.querySelector(toggleSelector);
+                    if (!toggleEl) {{
+                        return 'Schedule publish toggle is missing.';
+                    }}
+                    toggleEl.click();
                     await sleep(150);
-                    
+
                     // Set publish time
-                    const el = document.querySelector('.date-picker-container input');
-                    if (el == null) {{
+                    const inputEl = document.querySelector('.date-picker-container input');
+                    if (inputEl == null) {{
                         return 'Schedule publish date-picker input is missing.';
                     }}
+
                     var nativeSetter = Object.getOwnPropertyDescriptor(
                         window.HTMLInputElement.prototype, 'value'
                     ).set;
-                    el.focus();
-                    nativeSetter.call(el, '{post_time}');
+                    inputEl.focus();
+                    nativeSetter.call(inputEl, {escaped});
 
-                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    inputEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    inputEl.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     return 'ok';
                 }} catch (err) {{
                     return String(err);
@@ -2036,9 +2041,9 @@ class XiaohongshuPublisher:
             }})();
         """)
 
-        if not post_time_enabled == 'ok':
-            raise CDPError("Could not set scheduled publish time. Reason:" + post_time_enabled)
-        
+        if post_time_enabled != 'ok':
+            raise CDPError("Could not set scheduled publish time. Reason: " + post_time_enabled)
+
         print("[cdp_publish] Schedule publish time set.")
         return
 

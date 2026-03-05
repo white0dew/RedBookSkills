@@ -320,7 +320,7 @@ def main():
     parser.add_argument(
         "--post-time",
         default=None,
-        help="Timer for publishing on note",
+        help="Scheduled publish time (local machine time) in format: YYYY-MM-DD HH:MM",
     )
 
     # Media: images OR video (mutually exclusive)
