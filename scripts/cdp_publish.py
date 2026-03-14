@@ -140,8 +140,11 @@ SELECTORS = {
     "content_editor_alt": 'div.ProseMirror[contenteditable="true"]',
     "content_editor_alt2": "div.ql-editor",
     "content_placeholder_text": "输入正文描述",
-    # Publish button
+    # Publish button - multiple selectors for robustness
     "publish_button": ".publish-page-publish-btn button.bg-red",
+    "publish_button_alt": "button.publishBtn",
+    "publish_button_alt2": ".publishBtn",
+    "publish_button_alt3": "button[class*='publish']",
     "publish_button_text": "发布",
     "schedule_publish_button_text": "定时发布",
     "schedule_switch": ".post-time-wrapper .d-switch",
@@ -3338,7 +3341,12 @@ class XiaohongshuPublisher:
         """Locate the current publish button using current and legacy selectors."""
         return self._evaluate(f"""
             (() => {{
-                const buttonSelector = {json.dumps(SELECTORS["publish_button"])};
+                const buttonSelectors = [
+                    {json.dumps(SELECTORS["publish_button"])},
+                    {json.dumps(SELECTORS.get("publish_button_alt", "button.publishBtn"))},
+                    {json.dumps(SELECTORS.get("publish_button_alt2", ".publishBtn"))},
+                    {json.dumps(SELECTORS.get("publish_button_alt3", "button[class*='publish']"))},
+                ];
                 const visible = (node) => (
                     node instanceof HTMLElement &&
                     node.offsetParent !== null &&
@@ -3350,9 +3358,12 @@ class XiaohongshuPublisher:
                     return {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }};
                 }};
 
-                const button = document.querySelector(buttonSelector);
-                if (visible(button)) {{
-                    return toRect(button);
+                // Try all selectors first
+                for (const selector of buttonSelectors) {{
+                    const button = document.querySelector(selector);
+                    if (visible(button)) {{
+                        return toRect(button);
+                    }}
                 }}
 
                 const keywords = [
@@ -3379,7 +3390,9 @@ class XiaohongshuPublisher:
             (() => {{
                 const selectors = [
                     {json.dumps(SELECTORS["publish_button"])},
-                    "button.publishBtn",
+                    {json.dumps(SELECTORS.get("publish_button_alt", "button.publishBtn"))},
+                    {json.dumps(SELECTORS.get("publish_button_alt2", ".publishBtn"))},
+                    {json.dumps(SELECTORS.get("publish_button_alt3", "button[class*='publish']"))},
                 ];
                 const visible = (node) => (
                     node instanceof HTMLElement &&
