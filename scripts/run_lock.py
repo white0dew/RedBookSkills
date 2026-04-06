@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
 import tempfile
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,6 +20,30 @@ class SingleInstanceError(RuntimeError):
 def _lock_path(lock_name: str) -> str:
     safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in lock_name)
     return os.path.join(tempfile.gettempdir(), f"{safe_name}.lock")
+
+
+def build_lock_name(prefix: str, *parts: Any) -> str:
+    """Build a short deterministic lock name from arbitrary context parts."""
+    safe_prefix = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in prefix)
+    safe_prefix = safe_prefix or "lock"
+    payload = json.dumps(
+        [None if part is None else str(part) for part in parts],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"{safe_prefix}_{digest}"
+
+
+def build_xhs_lock_names(host: str, port: int, account_name: str) -> tuple[str, str]:
+    """Return the profile and CDP session lock names for a Xiaohongshu run."""
+    normalized_host = host.strip().lower()
+    if normalized_host in {"127.0.0.1", "localhost", "::1"}:
+        normalized_host = "local"
+    normalized_account = account_name.strip() or "default"
+    profile_lock = build_lock_name("xhs_profile", normalized_host, normalized_account)
+    session_lock = build_lock_name("xhs_session", normalized_host, port)
+    return profile_lock, session_lock
 
 
 def _pid_running(pid: int) -> bool:
@@ -122,3 +147,17 @@ def single_instance(lock_name: str = "post_to_xhs_publish"):
             pass
         except OSError:
             pass
+
+
+@contextmanager
+def acquire_locks(*lock_names: str):
+    """Acquire multiple single-instance locks in a deterministic order."""
+    unique_names = [name for name in dict.fromkeys(lock_names) if name]
+    if not unique_names:
+        yield
+        return
+
+    with ExitStack() as stack:
+        for lock_name in sorted(unique_names):
+            stack.enter_context(single_instance(lock_name))
+        yield

@@ -69,7 +69,7 @@ if SCRIPT_DIR not in sys.path:
 from chrome_launcher import ensure_chrome, restart_chrome
 from cdp_publish import XiaohongshuPublisher, CDPError
 from image_downloader import ImageDownloader
-from run_lock import SingleInstanceError, single_instance
+from run_lock import SingleInstanceError, acquire_locks, build_xhs_lock_names
 
 
 MAX_TIMING_JITTER_RATIO = 0.7
@@ -97,6 +97,34 @@ def _resolve_account_name(account_name: str | None) -> str:
     except Exception:
         pass
     return "default"
+
+
+def _peek_lock_context(argv: list[str]) -> tuple[str, int, str | None]:
+    """Parse the global CLI context needed to build deterministic locks."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=9222)
+    parser.add_argument("--account")
+    parser.add_argument("--title")
+    parser.add_argument("--title-file")
+    parser.add_argument("--content")
+    parser.add_argument("--content-file")
+    parser.add_argument("--post-time")
+    parser.add_argument("--image-urls", nargs="+")
+    parser.add_argument("--images", nargs="+")
+    parser.add_argument("--video")
+    parser.add_argument("--video-url")
+    parser.add_argument("--auto-publish", action="store_true")
+    parser.add_argument("--preview", action="store_true")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--timing-jitter", type=float)
+    parser.add_argument("--reuse-existing-tab", action="store_true")
+    parser.add_argument("--temp-dir")
+    parser.add_argument("--skip-file-check", action="store_true")
+    parser.add_argument("--preserve-upload-paths", action="store_true")
+
+    parsed, _ = parser.parse_known_args(argv)
+    return parsed.host, parsed.port, parsed.account
 
 
 def _jitter_ms(base_ms: int, jitter_ratio: float, minimum_ms: int = 0) -> int:
@@ -622,7 +650,9 @@ def main():
 
 if __name__ == "__main__":
     try:
-        with single_instance("post_to_xhs_publish"):
+        host, port, account = _peek_lock_context(sys.argv[1:])
+        resolved_account = _resolve_account_name(account)
+        with acquire_locks(*build_xhs_lock_names(host, port, resolved_account)):
             main()
     except SingleInstanceError as e:
         print(f"Error: {e}", file=sys.stderr)
