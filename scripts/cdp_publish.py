@@ -88,7 +88,12 @@ from feed_explorer import (
     make_feed_detail_url,
     make_search_url,
 )
-from run_lock import SingleInstanceError, single_instance
+from run_lock import (
+    SingleInstanceError,
+    acquire_locks,
+    build_lock_name,
+    build_xhs_lock_names,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration - centralised selectors and URLs for easy maintenance
@@ -164,6 +169,10 @@ DEFAULT_LOGIN_CACHE_TTL_HOURS = 12.0
 LOGIN_CACHE_FILE = os.path.abspath(
     os.path.join(SCRIPT_DIR, "..", "tmp", "login_status_cache.json")
 )
+ACCOUNT_CONFIG_LOCK = build_lock_name(
+    "xhs_accounts_config",
+    os.path.abspath(os.path.join(SCRIPT_DIR, "..", "config", "accounts.json")),
+)
 
 
 def _normalize_timing_jitter(value: float) -> float:
@@ -188,6 +197,32 @@ def _resolve_account_name(account_name: str | None) -> str:
     except Exception:
         pass
     return "default"
+
+
+ACCOUNT_MGMT_COMMANDS = {
+    "list-accounts",
+    "add-account",
+    "remove-account",
+    "set-default-account",
+}
+
+
+def _peek_lock_context(argv: list[str]) -> tuple[str, int, str | None, str | None]:
+    """Parse the global CLI context needed to build deterministic locks."""
+    import argparse
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--host", default=CDP_HOST)
+    parser.add_argument("--port", type=int, default=CDP_PORT)
+    parser.add_argument("--account")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--timing-jitter", type=float)
+    parser.add_argument("--reuse-existing-tab", action="store_true")
+    parser.add_argument("--preserve-upload-paths", action="store_true")
+    parser.add_argument("command", nargs="?")
+
+    parsed, _ = parser.parse_known_args(argv)
+    return parsed.host, parsed.port, parsed.account, parsed.command
 
 
 def _build_search_filters_from_args(args) -> SearchFilters | None:
@@ -4739,7 +4774,15 @@ def main():
 
 if __name__ == "__main__":
     try:
-        with single_instance("post_to_xhs_publish"):
+        host, port, account, command = _peek_lock_context(sys.argv[1:])
+        if command in ACCOUNT_MGMT_COMMANDS:
+            with acquire_locks(ACCOUNT_CONFIG_LOCK):
+                main()
+        elif command:
+            resolved_account = _resolve_account_name(account)
+            with acquire_locks(*build_xhs_lock_names(host, port, resolved_account)):
+                main()
+        else:
             main()
     except SingleInstanceError as e:
         print(f"Error: {e}", file=sys.stderr)

@@ -20,9 +20,15 @@ import sys
 import shutil
 from typing import Optional
 
+from run_lock import acquire_locks, build_lock_name
+
 # Config file location
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config")
 ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "accounts.json")
+ACCOUNT_CONFIG_LOCK = build_lock_name(
+    "xhs_accounts_config",
+    os.path.abspath(ACCOUNTS_FILE),
+)
 
 # Base directory for account profiles
 PROFILES_BASE = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
@@ -254,55 +260,56 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "list":
-        accounts = list_accounts()
-        if not accounts:
-            print("No accounts configured.")
-            return
-        print(f"{'Name':<20} {'Alias':<20} {'Default':<10}")
-        print("-" * 50)
-        for acc in accounts:
-            default_mark = "*" if acc["is_default"] else ""
-            print(f"{acc['name']:<20} {acc['alias']:<20} {default_mark:<10}")
+    with acquire_locks(ACCOUNT_CONFIG_LOCK):
+        if args.command == "list":
+            accounts = list_accounts()
+            if not accounts:
+                print("No accounts configured.")
+                return
+            print(f"{'Name':<20} {'Alias':<20} {'Default':<10}")
+            print("-" * 50)
+            for acc in accounts:
+                default_mark = "*" if acc["is_default"] else ""
+                print(f"{acc['name']:<20} {acc['alias']:<20} {default_mark:<10}")
 
-    elif args.command == "add":
-        if add_account(args.name, args.alias):
-            print(f"Account '{args.name}' added.")
-            print(f"Profile dir: {get_profile_dir(args.name)}")
-            print("\nTo log in to this account, run:")
-            print(f"  python cdp_publish.py --account {args.name} login")
-        else:
-            print(f"Error: Account '{args.name}' already exists.", file=sys.stderr)
-            sys.exit(1)
+        elif args.command == "add":
+            if add_account(args.name, args.alias):
+                print(f"Account '{args.name}' added.")
+                print(f"Profile dir: {get_profile_dir(args.name)}")
+                print("\nTo log in to this account, run:")
+                print(f"  python cdp_publish.py --account {args.name} login")
+            else:
+                print(f"Error: Account '{args.name}' already exists.", file=sys.stderr)
+                sys.exit(1)
 
-    elif args.command == "remove":
-        if remove_account(args.name, args.delete_profile):
-            print(f"Account '{args.name}' removed.")
-        else:
-            print(f"Error: Cannot remove account '{args.name}'.", file=sys.stderr)
-            sys.exit(1)
+        elif args.command == "remove":
+            if remove_account(args.name, args.delete_profile):
+                print(f"Account '{args.name}' removed.")
+            else:
+                print(f"Error: Cannot remove account '{args.name}'.", file=sys.stderr)
+                sys.exit(1)
 
-    elif args.command == "info":
-        info = get_account_info(args.name)
-        if info:
-            print(f"Name: {info['name']}")
-            print(f"Alias: {info.get('alias', '')}")
-            print(f"Profile dir: {info.get('profile_dir', '')}")
-            print(f"Default: {'Yes' if info.get('is_default') else 'No'}")
-            print(f"Created: {info.get('created_at', 'Unknown')}")
-        else:
-            print(f"Error: Account '{args.name}' not found.", file=sys.stderr)
-            sys.exit(1)
+        elif args.command == "info":
+            info = get_account_info(args.name)
+            if info:
+                print(f"Name: {info['name']}")
+                print(f"Alias: {info.get('alias', '')}")
+                print(f"Profile dir: {info.get('profile_dir', '')}")
+                print(f"Default: {'Yes' if info.get('is_default') else 'No'}")
+                print(f"Created: {info.get('created_at', 'Unknown')}")
+            else:
+                print(f"Error: Account '{args.name}' not found.", file=sys.stderr)
+                sys.exit(1)
 
-    elif args.command == "set-default":
-        if set_default_account(args.name):
-            print(f"Default account set to '{args.name}'.")
-        else:
-            print(f"Error: Account '{args.name}' not found.", file=sys.stderr)
-            sys.exit(1)
+        elif args.command == "set-default":
+            if set_default_account(args.name):
+                print(f"Default account set to '{args.name}'.")
+            else:
+                print(f"Error: Account '{args.name}' not found.", file=sys.stderr)
+                sys.exit(1)
 
-    elif args.command == "get-profile-dir":
-        print(get_profile_dir(args.account))
+        elif args.command == "get-profile-dir":
+            print(get_profile_dir(args.account))
 
 
 if __name__ == "__main__":
